@@ -80,47 +80,51 @@ class ChatManager:
         return result
 
     def _track_token_usage(self, is_reset=False):
-        """Tracks token usage while preserving chat history. Handles resets properly."""
+        """Tracks token usage, handling restores properly while keeping history clean."""
+
         total_used = self.callback_handler.total_tokens
         prompt_used = self.callback_handler.prompt_tokens
         completion_used = self.callback_handler.completion_tokens
 
-        # 🛠️ Get last known cumulative values (before reset)
-        prev_total = self.token_usage_history["cumulative_tokens"][-1] if self.token_usage_history["cumulative_tokens"] else 0
-        prev_prompt = self.token_usage_history["cumulative_prompt_tokens"][-1] if self.token_usage_history["cumulative_prompt_tokens"] else 0
-        prev_completion = self.token_usage_history["cumulative_completion_tokens"][-1] if self.token_usage_history["cumulative_completion_tokens"] else 0
-
-        # 🛠️ Handle Reset Properly
+        # 🔹 Handle Reset (Restore)
         if is_reset:
-            # Instead of resetting to zero, continue tracking smoothly
+            # ✅ Reset cumulative tracking to the new base values
+            self.token_usage_history["steps"].append("RESET")  # Mark the reset point
+            self.token_usage_history["cumulative_tokens"].append(0)
+            self.token_usage_history["cumulative_prompt_tokens"].append(0)
+            self.token_usage_history["cumulative_completion_tokens"].append(0)
+            self.token_usage_history["individual_total_tokens"].append(0)
+            self.token_usage_history["individual_prompt_tokens"].append(0)
+            self.token_usage_history["individual_completion_tokens"].append(0)
+
+            # ✅ Mark new baseline for tracking
             self.last_known_cumulative = {
                 "total": total_used,
                 "prompt": prompt_used,
                 "completion": completion_used
             }
-            return  # Don't log a new step yet; let the next request handle it correctly
+            return  # Exit to avoid logging an extra step
 
-        # Adjust first step after reset to avoid zero dip
-        if hasattr(self, "last_known_cumulative"):
-            prev_total = self.last_known_cumulative["total"]
-            prev_prompt = self.last_known_cumulative["prompt"]
-            prev_completion = self.last_known_cumulative["completion"]
-            del self.last_known_cumulative  # Ensure it's only used once
+        # 🔹 Adjust Tracking After Restore
+        prev_total = self.last_known_cumulative["total"] if hasattr(self, "last_known_cumulative") else 0
+        prev_prompt = self.last_known_cumulative["prompt"] if hasattr(self, "last_known_cumulative") else 0
+        prev_completion = self.last_known_cumulative["completion"] if hasattr(self, "last_known_cumulative") else 0
 
-        # Ensure no negative values appear
+        # ✅ Ensure the first step after reset starts from zero correctly
         individual_total = max(0, total_used - prev_total)
         individual_prompt = max(0, prompt_used - prev_prompt)
         individual_completion = max(0, completion_used - prev_completion)
 
-        # Store new token usage values
-        steps = len(self.token_usage_history["steps"]) + 1
-        self.token_usage_history["steps"].append(steps)
-        self.token_usage_history["cumulative_tokens"].append(total_used)
-        self.token_usage_history["cumulative_prompt_tokens"].append(prompt_used)
-        self.token_usage_history["cumulative_completion_tokens"].append(completion_used)
+        # Append new token usage values
+        step = len(self.token_usage_history["steps"]) + 1
+        self.token_usage_history["steps"].append(step)
+        self.token_usage_history["cumulative_tokens"].append(individual_total)
+        self.token_usage_history["cumulative_prompt_tokens"].append(individual_prompt)
+        self.token_usage_history["cumulative_completion_tokens"].append(individual_completion)
         self.token_usage_history["individual_total_tokens"].append(individual_total)
         self.token_usage_history["individual_prompt_tokens"].append(individual_prompt)
         self.token_usage_history["individual_completion_tokens"].append(individual_completion)
+
 
     def show_chat_versions(self):
         """Displays all chat versions saved so far."""

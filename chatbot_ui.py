@@ -7,6 +7,14 @@ from chatbot import ChatManager
 from langchain.schema import AIMessage, HumanMessage
 
 
+def get_message_content(msg):
+    """Extracts the content from a message, handling both dict and object formats."""
+    if isinstance(msg, dict):
+        return msg.get("content", "No content")
+    elif hasattr(msg, "content"):
+        return msg.content
+    return "Unknown format"
+
 # Initialize chat session and memory
 def init_chat():
     """Initialize chat session and memory in Streamlit."""
@@ -18,6 +26,12 @@ def init_chat():
 
     if "change_log" not in st.session_state:
         st.session_state.change_log = []
+    
+    if "restored" not in st.session_state:
+        st.session_state.restored = False  # Default state
+
+    if "reset_tokens" not in st.session_state:
+        st.session_state.reset_tokens = False  # Default state
 
 # Set up the Streamlit page configuration
 def setup_page():
@@ -25,82 +39,66 @@ def setup_page():
     st.set_page_config(page_title="Chatbot", layout="wide")
     st.title("💬 OpenAI Chatbot with Memory Management")
 
-# # Ensure we can handle AIMessage, HumanMessage, BotMessage correctly
-# def handle_user_input():
-#     """Process the user input and update the chat history."""
-#     user_input = st.chat_input("Type your message...")
-
-#     if user_input:
-#         # If no versions exist yet (initial state), initialize the first version
-#         if not st.session_state.chat_versions:
-#             st.session_state.chat_manager.memory.chat_memory.messages = []  # Empty chat memory
-#             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-#             initial_version = (timestamp, st.session_state.chat_manager.memory.chat_memory.messages)
-#             st.session_state.chat_versions.append(initial_version)
-
-#         # Get the latest version (the current one)
-#         current_version = st.session_state.chat_versions[-1]  # The last item is the current version
-
-#         # Copy the current version (don't modify the original one)
-#         updated_messages = copy.deepcopy(current_version[1])  # Copy the list of messages from the current version
-
-#         # Process the user input and get the bot's response
-#         response = st.session_state.chat_manager.process_user_input(user_input)
-
-#         # Append the user input and bot response to the copied version
-#         updated_messages.append({"type": "human", "content": user_input})
-
-#         # Handle the AIMessage response properly
-#         if isinstance(response, AIMessage):
-#             updated_messages.append({"type": "ai", "content": response.content})
-#         else:
-#             updated_messages.append({"type": "bot", "content": response['text']})
-
-#         # Create a new version with the updated messages
-#         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-#         new_version = (timestamp, updated_messages)
-
-#         # Append the new version to the chat_versions list
-#         st.session_state.chat_versions.append(new_version)
-
-#         # Optionally rerun the app to display the updated state
-#         st.rerun()
-
 def handle_user_input():
     """Process the user input and update the chat history."""
     user_input = st.chat_input("Type your message...")
 
     if user_input:
-        # Process the user input and get the bot's response
+
+        if st.session_state.reset_tokens:  # ✅ Runs only once after restore
+            st.session_state.chat_manager._track_token_usage(is_reset=True)  
+            st.session_state.reset_tokens = False  # 🚨 Reset flag after handling
+
+        # 🔹 Capture the state before processing
+        latest_version = copy.deepcopy(st.session_state.chat_manager.memory.chat_memory.messages)
+
+        # 🔹 Process user input (this modifies memory directly)
         response = st.session_state.chat_manager.process_user_input(user_input)
 
-        # Ensure we start fresh after restore
-        latest_version = copy.deepcopy(st.session_state.chat_versions[-1][1]) if st.session_state.chat_versions else []
+        # 🔹 Capture the state *after* processing
+        updated_version = copy.deepcopy(st.session_state.chat_manager.memory.chat_memory.messages)
 
-        # Append new messages
-        latest_version.append({"type": "human", "content": user_input})
-        latest_version.append({"type": "ai", "content": response.content if isinstance(response, AIMessage) else response['text']})
+        # Convert to dictionary format for versioning using the helper function
+        latest_version = [{"type": "human", "content": get_message_content(msg)} if isinstance(msg, HumanMessage) 
+                        else {"type": "ai", "content": get_message_content(msg)} for msg in latest_version]
 
-        # Create a fresh version after every new message
+        updated_version = [{"type": "human", "content": get_message_content(msg)} if isinstance(msg, HumanMessage) 
+                        else {"type": "ai", "content": get_message_content(msg)} for msg in updated_version]
+
+
+        # If restored, save a "checkpoint" version before appending new messages
+        if st.session_state.restored:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            st.session_state.chat_versions.append((timestamp, latest_version))  # Save the restore state
+            st.session_state.restored = False  # Reset flag
+
+        # Save the final updated version
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        st.session_state.chat_versions.append((timestamp, latest_version))
+        st.session_state.chat_versions.append((timestamp, updated_version))
 
         st.rerun()
 
-
-# Display chat history
 def display_chat_history():
     """Display the chat history with the chat messages."""
     st.subheader("Chat History")
     chat_container = st.container()
-    with chat_container:
-        for msg in st.session_state.chat_manager.memory.chat_memory.messages:
-            if msg.type == "human":
-                st.markdown(f'<div style="background-color: #e0f7fa; padding: 10px; border-radius: 5px; margin-bottom: 5px;">👤 {msg.content}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div style="background-color: #ffe0b2; padding: 10px; border-radius: 5px; margin-bottom: 5px;">🤖 {msg.content}</div>', unsafe_allow_html=True)
 
-# Update version management to display messages correctly
+    with chat_container:
+
+        for msg in st.session_state.chat_manager.memory.chat_memory.messages:
+            msg_content = get_message_content(msg)
+            msg_type = msg.get("type", "unknown") if isinstance(msg, dict) else getattr(msg, "type", "unknown")
+
+            # Debug output
+            print(f'Message: {msg}, Content: {msg_content}, Type: {msg_type}')
+
+            if msg_type == "human":
+                st.markdown(f'<div style="background-color: #e0f7fa; padding: 10px; border-radius: 5px; margin-bottom: 5px;">👤 {msg_content}</div>', unsafe_allow_html=True)
+            elif msg_type == "ai":
+                st.markdown(f'<div style="background-color: #ffe0b2; padding: 10px; border-radius: 5px; margin-bottom: 5px;">🤖 {msg_content}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div style="background-color: #f8d7da; padding: 10px; border-radius: 5px; margin-bottom: 5px;">⚠️ Unknown Message Type: {msg_content}</div>', unsafe_allow_html=True)
+
 def handle_version_management():
     """Handle version selection and display messages properly."""
     st.subheader("Manage Versions")
@@ -117,13 +115,17 @@ def handle_version_management():
 
         st.write(f"Messages in {selected_version}:")
         for msg in selected_version_messages:
-            # Check if msg has 'content' attribute, then display accordingly
-            if isinstance(msg, dict) and 'content' in msg:
-                st.write(f"{msg['type'].capitalize()}: {msg['content']}")
+            # Use the get_message_content helper function to retrieve content
+            msg_content = get_message_content(msg)  # Retrieve content uniformly
+            msg_type = msg.get("type", "unknown") if isinstance(msg, dict) else getattr(msg, "type", "unknown")
+
+            # Display the message appropriately
+            if msg_type == "human":
+                st.write(f"👤 {msg_content}")
+            elif msg_type == "ai":
+                st.write(f"🤖 {msg_content}")
             else:
-                st.write("Unknown message format. Please check your data.")
-
-
+                st.write(f"⚠️ Unknown Message Type: {msg_content}")
 
 
 
@@ -171,49 +173,15 @@ def show_usage_plots():
     # Display the plot in Streamlit
     st.pyplot(fig)
 
-# # Function to display all versions
-# def display_versions():
-#     """Display all versions in the dropdown and show messages."""
-#     st.subheader("Manage Versions")
-
-#     # Ensure that the first version (Version 0) is in the list
-#     if len(st.session_state.chat_versions) == 0:
-#         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-#         st.session_state.chat_versions.append((timestamp, []))  # Adding the empty version as Version 0
-
-#     # Get version timestamps for the dropdown, including Version 0
-#     version_timestamps = [f"Version {i + 1}: {timestamp}" for i, (timestamp, _) in enumerate(st.session_state.chat_versions)]
-
-#     # Dropdown to select a version
-#     selected_version = st.selectbox("Select Version", version_timestamps)
-
-#     if selected_version:
-#         version_index = version_timestamps.index(selected_version)
-#         selected_version_messages = st.session_state.chat_versions[version_index][1]
-
-#         st.write(f"Messages in {selected_version}:")
-
-#         # Fixing issue: Handling non-dict-like message objects correctly
-#         for msg in selected_version_messages:
-#             if isinstance(msg, dict) and 'content' in msg:
-#                 st.write(f"{msg['type'].capitalize()}: {msg['content']}")
-#             else:
-#                 st.write("Unknown message format. Please check your data.")
-
-
 def display_versions():
-    """Display all versions in the dropdown and show messages."""
+    """Display all versions in the dropdown and allow restoring chat states."""
     st.subheader("Manage Versions")
 
-    # Ensure that the first version (Version 0) is in the list
-    if len(st.session_state.chat_versions) == 0:
+    if not st.session_state.chat_versions:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        st.session_state.chat_versions.append((timestamp, []))  # Adding the empty version as Version 0
+        st.session_state.chat_versions.append((timestamp, []))  # Ensure at least one empty version
 
-    # Get version timestamps for the dropdown, including Version 0
     version_timestamps = [f"Version {i + 1}: {timestamp}" for i, (timestamp, _) in enumerate(st.session_state.chat_versions)]
-
-    # Dropdown to select a version
     selected_version = st.selectbox("Select Version", version_timestamps)
 
     if selected_version:
@@ -222,20 +190,37 @@ def display_versions():
 
         st.write(f"Messages in {selected_version}:")
         for msg in selected_version_messages:
-            if isinstance(msg, dict) and 'content' in msg:
-                st.write(f"{msg['type'].capitalize()}: {msg['content']}")
+            # Use the get_message_content helper function to retrieve content
+            msg_content = get_message_content(msg)  # Retrieve content uniformly
+            msg_type = msg.get("type", "unknown") if isinstance(msg, dict) else getattr(msg, "type", "unknown")
+
+            # Display the message appropriately
+            if msg_type == "human":
+                st.write(f"👤 {msg_content}")
+            elif msg_type == "ai":
+                st.write(f"🤖 {msg_content}")
             else:
-                st.write("Unknown message format. Please check your data.")
+                st.write(f"⚠️ Unknown Message Type: {msg_content}")
 
-
-
-
-        # Move the button here for better accessibility
+        # Restore Button Logic (Updated)
         if st.button("Restore Selected Version"):
-            st.session_state.current_chat = selected_version_messages  # Update the current chat state
-            st.session_state.chat_manager.restore_chat_version(version_index)
-            st.success(f"Successfully restored to {selected_version}!")
-            st.rerun()  # Use experimental_rerun for better state handling
+            st.session_state.restored = True  # 🔹 Mark as restored
+            st.session_state.reset_tokens = True  # ✅ Indicate tokens should reset
+
+            # **Ensure old messages are cleared before restoring**
+            st.session_state.chat_manager.memory.chat_memory.messages.clear()
+
+            # **Deep copy to prevent reference issues**
+            restored_messages = copy.deepcopy(selected_version_messages)
+            st.session_state.chat_manager.memory.chat_memory.messages = restored_messages
+
+            # **Create a new version with restored messages**
+            new_timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            st.session_state.chat_versions.append((new_timestamp, restored_messages))
+
+
+            st.success(f"Successfully restored to {selected_version}! A new version has been created.")
+            st.rerun()
 
 # Main function to handle chat, memory, and token stats
 def main():
