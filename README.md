@@ -188,5 +188,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 Your feedback is always welcome! If you have any questions, suggestions, or issues, feel free to open an issue on the GitHub repository or submit a pull request.
 
 ---
-
-This **README** now guides users through adding the OpenAI API key without needing to test it, and it concludes with sections for license and feedback. Let me know if you'd like further updates! 😊
